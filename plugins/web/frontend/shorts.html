@@ -607,26 +607,32 @@ Channel
 <div class="action">
 
 <button
-onclick="subscribe(${video.channel_id},this)">
-+
-</button>
-
-<span>
-${video.subscribers || 0}
-</span>
-
-</div>
-
-
-<div class="action">
-
-<button
 onclick="copyVideoLink(${video.id})">
 🔗
 </button>
 
 <span>
 Share
+</span>
+
+</div>
+
+
+
+<div class="action">
+<button type="button" onclick="openComments(${video.id})">💬</button>
+<span>Comments</span>
+</div>
+
+<div class="action">
+
+<button
+onclick="subscribe(${video.channel_id},this)">
++
+</button>
+
+<span>
+${video.subscribers || 0}
 </span>
 
 </div>
@@ -1220,6 +1226,18 @@ location.href =
    Copy Link
 ========================= */
 
+function openComments(id) {
+    if (id === undefined || id === null || id === "") {
+        alert("Could not identify this Short.");
+        return;
+    }
+
+    location.href =
+        "comments.html?videoId=" +
+        encodeURIComponent(id) +
+        "&source=shorts";
+}
+
 async function copyVideoLink(id){
 
     const link =
@@ -1303,60 +1321,6 @@ return String(text)
 
 loadShorts();
 
-</script>
-<script id="itube-comments-navigation">
-(function () {
-  if (document.getElementById("itube-comments-navigation-style")) return;
-
-  const style = document.createElement("style");
-  style.id = "itube-comments-navigation-style";
-  style.textContent =
-    "#itube-comments-navigation-button{" +
-    "position:fixed;right:16px;bottom:24px;z-index:2147483000;" +
-    "padding:12px 18px;border:0;border-radius:24px;" +
-    "background:#252525;color:white;font-size:15px;" +
-    "font-weight:600;box-shadow:0 2px 10px #0005;cursor:pointer}";
-  document.head.appendChild(style);
-
-  const button = document.createElement("button");
-  button.id = "itube-comments-navigation-button";
-  button.type = "button";
-  button.textContent = "💬 Comments";
-  button.addEventListener("click", function () {
-    const params = new URLSearchParams(location.search);
-    let id = params.get("videoId") || params.get("id") || params.get("v");
-
-    if (!id) {
-      for (const key of [
-        "videoId", "currentVideoId", "currentShortId", "shortId"
-      ]) {
-        try {
-          if (typeof window[key] === "string" && window[key]) {
-            id = window[key];
-            break;
-          }
-        } catch (_) {}
-      }
-    }
-
-    if (!id) {
-      const video = document.querySelector("video");
-      id = video && (
-        video.dataset.videoId ||
-        video.getAttribute("data-video-id")
-      );
-    }
-
-    if (!id) {
-      alert("Could not identify this video. Please open the video from its video page.");
-      return;
-    }
-
-    location.href = "comments.html?videoId=" + encodeURIComponent(id);
-  });
-
-  document.body.appendChild(button);
-})();
 </script>
 
 </body></html>

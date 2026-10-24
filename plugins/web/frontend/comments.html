@@ -187,8 +187,11 @@ const label = document.getElementById("videoLabel");
 const backVideo = document.getElementById("backVideo");
 
 if(videoId){
-    backVideo.href =
-        "/watch.html?id=" + encodeURIComponent(videoId);
+    const source = params.get("source");
+
+    backVideo.href = source === "shorts"
+        ? "/shorts.html"
+        : "/watch.html?id=" + encodeURIComponent(videoId);
 
     label.textContent = "Video ID: " + videoId;
 }else{

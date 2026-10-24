@@ -259,7 +259,7 @@ function shutdown(){
 
     try{
 
-        if(agent && !agent.killed){
+        if(typeof agent !== "undefined" && agent && !agent.killed){
 
             agent.kill("SIGINT");
 

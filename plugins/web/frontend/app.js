@@ -153,6 +153,12 @@ async function loadVideos(){
             👍 ${video.likes ? video.likes.length : 0}
 
             </button>
+            
+            <button onclick="window.location.href='/comments.html?id=${encodeURIComponent(video.id)}'">
+            💬 Comments
+            </button>
+
+
 
             `;
 

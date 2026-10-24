@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>i.Tube - Comments</title>
+
+<style>
+*{box-sizing:border-box}
+
+body{
+    margin:0;
+    background:#111;
+    color:white;
+    font-family:Arial,sans-serif
+}
+
+header{
+    background:#181818;
+    padding:18px;
+    color:#ff3030;
+    font-size:26px;
+    font-weight:bold
+}
+
+main{
+    max-width:850px;
+    margin:25px auto;
+    padding:16px
+}
+
+nav{
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+    margin-bottom:20px
+}
+
+a,.button{
+    display:inline-block;
+    background:#292929;
+    color:white;
+    text-decoration:none;
+    border:0;
+    border-radius:8px;
+    padding:10px 14px;
+    cursor:pointer;
+    font:inherit
+}
+
+a:hover,.button:hover{
+    background:#3b3b3b
+}
+
+.panel{
+    background:#1b1b1b;
+    border-radius:12px;
+    padding:18px
+}
+
+textarea{
+    width:100%;
+    min-height:95px;
+    resize:vertical;
+    padding:12px;
+    background:#111;
+    color:white;
+    border:1px solid #444;
+    border-radius:8px;
+    font:inherit
+}
+
+form{
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    margin:15px 0
+}
+
+.primary{
+    background:#d92323;
+    align-self:flex-start
+}
+
+.status{
+    min-height:22px;
+    color:#bbb;
+    font-size:14px
+}
+
+.comment{
+    padding:15px 0;
+    border-bottom:1px solid #333
+}
+
+.meta{
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+    color:#aaa;
+    font-size:13px
+}
+
+.author{
+    color:white;
+    font-weight:bold
+}
+
+.comment-text{
+    white-space:pre-wrap;
+    overflow-wrap:anywhere;
+    line-height:1.5
+}
+
+.edit{
+    margin-top:5px;
+    font-size:13px
+}
+
+@media(max-width:600px){
+    main{padding:12px;margin:10px auto}
+    .panel{padding:13px}
+}
+</style>
+</head>
+
+<body>
+
+<header>i.Tube</header>
+
+<main>
+
+<nav>
+<a id="backVideo" href="/">← Back to video</a>
+<a href="/shorts.html">Shorts</a>
+<a href="/">Home</a>
+</nav>
+
+<h1>Comments</h1>
+
+<p id="videoLabel" style="color:#aaa">
+Loading comments...
+</p>
+
+<section class="panel">
+
+<h2>Write a comment</h2>
+
+<form id="commentForm">
+
+<textarea
+id="commentText"
+maxlength="1000"
+placeholder="Write a comment..."
+aria-label="Write a comment"></textarea>
+
+<button class="button primary" type="submit">
+Post comment
+</button>
+
+</form>
+
+<div id="commentStatus" class="status" role="status"></div>
+
+<h2>
+All comments (<span id="commentCount">0</span>)
+</h2>
+
+<div id="commentsList">Loading comments...</div>
+
+</section>
+</main>
+
+<script>
+"use strict";
+
+const params = new URLSearchParams(location.search);
+const videoId = params.get("id");
+
+let viewerId = null;
+
+const list = document.getElementById("commentsList");
+const count = document.getElementById("commentCount");
+const statusBox = document.getElementById("commentStatus");
+const input = document.getElementById("commentText");
+const label = document.getElementById("videoLabel");
+const backVideo = document.getElementById("backVideo");
+
+if(videoId){
+    backVideo.href =
+        "/watch.html?id=" + encodeURIComponent(videoId);
+
+    label.textContent = "Video ID: " + videoId;
+}else{
+    label.textContent = "Video ID is missing.";
+    list.textContent =
+        "Open this page using a video's Comments button.";
+
+    document.getElementById("commentForm").hidden = true;
+}
+
+async function loadViewer(){
+    const token = localStorage.token;
+
+    if(!token) return;
+
+    try{
+        const response = await fetch("/accounts/me", {
+            headers:{
+                Authorization:"Bearer " + token
+            }
+        });
+
+        const data = await response.json();
+
+        if(data.success && data.user){
+            viewerId = data.user.id;
+        }
+    }catch(error){
+        console.warn("Could not load current user:", error);
+    }
+}
+
+function makeButton(text, callback){
+    const button = document.createElement("button");
+
+    button.type = "button";
+    button.className = "button edit";
+    button.textContent = text;
+    button.addEventListener("click", callback);
+
+    return button;
+}
+
+async function loadComments(){
+    if(!videoId) return;
+
+    list.textContent = "Loading comments...";
+
+    try{
+        const response = await fetch(
+            "/comments/" + encodeURIComponent(videoId)
+        );
+
+        const data = await response.json();
+
+        if(!response.ok || !data.success){
+            list.textContent =
+                data.error || "Could not load comments.";
+
+            return;
+        }
+
+        const comments = Array.isArray(data.comments)
+            ? data.comments
+            : [];
+
+        count.textContent = String(comments.length);
+        list.replaceChildren();
+
+        if(comments.length === 0){
+            list.textContent = "No comments yet.";
+            return;
+        }
+
+        for(const comment of comments){
+
+            const article = document.createElement("article");
+            article.className = "comment";
+
+            const meta = document.createElement("div");
+            meta.className = "meta";
+
+            const author = document.createElement("span");
+            author.className = "author";
+            author.textContent = comment.username || "Unknown user";
+
+            const edited = document.createElement("span");
+            edited.textContent = comment.updated_at ? "Edited" : "";
+
+            meta.append(author, edited);
+
+            const text = document.createElement("p");
+            text.className = "comment-text";
+            text.textContent = comment.text || "";
+
+            article.append(meta, text);
+
+            if(
+                viewerId !== null &&
+                String(viewerId) === String(comment.user_id)
+            ){
+                article.append(
+                    makeButton("Edit / delete", async () => {
+                        const value = prompt(
+                            "Edit your comment. Leave it empty and press OK to delete it.",
+                            comment.text || ""
+                        );
+
+                        if(value === null) return;
+
+                        await editComment(comment.id, value);
+                    })
+                );
+            }
+
+            list.append(article);
+        }
+
+    }catch(error){
+        console.error("Load comments error:", error);
+        list.textContent = "Error loading comments.";
+    }
+}
+
+async function editComment(id, text){
+    const token = localStorage.token;
+
+    if(!token){
+        statusBox.textContent = "Please log in first.";
+        return;
+    }
+
+    statusBox.textContent = "Saving...";
+
+    try{
+        const response = await fetch(
+            "/comments/" + encodeURIComponent(id) + "/edit",
+            {
+                method:"POST",
+                headers:{
+                    "Content-Type":"application/json",
+                    Authorization:"Bearer " + token
+                },
+                body:JSON.stringify({text})
+            }
+        );
+
+        const data = await response.json();
+
+        if(!response.ok || !data.success){
+            statusBox.textContent =
+                data.error || "Could not update comment.";
+
+            return;
+        }
+
+        statusBox.textContent = data.removed
+            ? "Comment deleted."
+            : "Comment updated.";
+
+        await loadComments();
+
+    }catch(error){
+        console.error("Edit comment error:", error);
+        statusBox.textContent = "Error updating comment.";
+    }
+}
+
+document.getElementById("commentForm").addEventListener(
+    "submit",
+    async event => {
+        event.preventDefault();
+
+        const token = localStorage.token;
+        const text = input.value.trim();
+
+        if(!videoId){
+            statusBox.textContent = "Video ID is missing.";
+            return;
+        }
+
+        if(!token){
+            statusBox.textContent = "Please log in to post a comment.";
+            return;
+        }
+
+        if(!text){
+            statusBox.textContent = "Write a comment first.";
+            return;
+        }
+
+        statusBox.textContent = "Posting...";
+
+        try{
+            const response = await fetch(
+                "/comments/" + encodeURIComponent(videoId),
+                {
+                    method:"POST",
+                    headers:{
+                        "Content-Type":"application/json",
+                        Authorization:"Bearer " + token
+                    },
+                    body:JSON.stringify({text})
+                }
+            );
+
+            const data = await response.json();
+
+            if(!response.ok || !data.success){
+                statusBox.textContent =
+                    data.error || "Could not post comment.";
+
+                return;
+            }
+
+            input.value = "";
+            statusBox.textContent = "Comment posted.";
+
+            await loadComments();
+
+        }catch(error){
+            console.error("Post comment error:", error);
+            statusBox.textContent = "Error posting comment.";
+        }
+    }
+);
+
+(async function init(){
+    await loadViewer();
+    await loadComments();
+})();
+</script>
+
+</body>
+</html>

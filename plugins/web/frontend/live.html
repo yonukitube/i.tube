@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>i.Tube Live</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#101014;color:#f5f5f7;font:16px Arial,sans-serif}
+header{padding:16px;display:flex;justify-content:space-between;align-items:center;gap:10px;background:#19191f}
+main{max-width:1000px;margin:auto;padding:16px}
+.panel,.stream{background:#1b1b22;border:1px solid #34343d;border-radius:14px;padding:16px;margin:16px 0}
+button,input,select{font:inherit;padding:11px;border:1px solid #444;border-radius:9px}
+button{background:#292932;color:white;cursor:pointer}
+.primary{background:#d9233d;border:0;font-weight:bold}
+input,select{display:block;width:100%;background:#101014;color:white;margin:8px 0 14px}
+label{display:block;color:#ccc}
+video{width:100%;max-height:55vh;background:#000;border-radius:12px;margin-top:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.row button{flex:1}
+.muted{color:#b8b8c4;line-height:1.5}
+.error{color:#ff8c9b}
+.hidden{display:none!important}
+.layout{display:grid;grid-template-columns:1.4fr 1fr;gap:14px}
+.chatMessages{height:250px;overflow:auto;background:#101014;padding:10px;border-radius:10px}
+.chatline{padding:7px 0;border-bottom:1px solid #333;overflow-wrap:anywhere}
+.chatline strong{color:#8bc8ff}
+.chatform{display:flex;gap:6px;margin-top:10px}
+.chatform input{min-width:0;margin:0}
+.chatform button{flex-shrink:0}
+@media(max-width:650px){.layout{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+<h1>🔴 i.Tube Live</h1>
+<button onclick="location.href='index.html'">Back to i.Tube</button>
+</header>
+<main>
+<section class="panel">
+<h2>Create a live stream</h2>
+<p class="muted">Video is sent directly between devices using WebRTC. Devices must be able to communicate on the local network.</p>
+<label for="title">Stream title</label>
+<input id="title" maxlength="100" placeholder="What are you streaming?">
+<label for="mode">Video source</label>
+<select id="mode">
+<option value="camera">Phone camera</option>
+</select>
+<button id="createBtn" class="primary">Create Live Stream</button>
+<p id="message" class="muted"></p>
+<div id="hostBox" class="hidden">
+<h3>Your live preview</h3>
+<video id="preview" autoplay muted playsinline></video>
+<div class="row">
+<button id="switchBtn">🔄 Switch Camera</button>
+<button id="endBtn" class="primary">End Live Stream</button>
+</div>
+<h3>💬 Live chat</h3>
+<div id="hostChat" class="chatMessages"></div>
+<form id="hostChatForm" class="chatform">
+<input id="hostChatInput" maxlength="500" placeholder="Write a message…">
+<button class="primary">Send</button>
+</form>
+</div>
+</section>
+<h2>Active live streams</h2>
+<div id="streams"><p class="muted">Loading…</p></div>
+</div>
+<section id="viewerBox" class="panel hidden">
+<h2 id="viewerTitle">Watching live</h2>
+<div class="layout">
+<div>
+<video id="remoteVideo" autoplay playsinline controls></video>
+<p id="viewerStatus" class="muted">Connecting…</p>
+</div>
+<div>
+<h3>💬 Live chat</h3>
+<div id="viewerChat" class="chatMessages"></div>
+<form id="viewerChatForm" class="chatform">
+<input id="viewerChatInput" maxlength="500" placeholder="Write a message…">
+<button class="primary">Send</button>
+</form>
+</div>
+</div>
+<button id="leaveBtn">Leave stream</button>
+</section>
+</main>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+let socket=null,streamId=null,media=null,mode=null,facing="user";
+let hostPeers=new Map(),viewerPC=null,watchingId=null,pendingIce=[];
+
+async function api(url,options={}){
+ const headers={...(options.headers||{})};
+ if(localStorage.token)headers.Authorization="Bearer "+localStorage.token;
+ if(options.body)headers["Content-Type"]="application/json";
+ const r=await fetch(url,{...options,headers});
+ const d=await r.json().catch(()=>({}));
+ if(!r.ok||d.success===false)throw Error(d.error||"Request failed");
+ return d;
+}
+function say(text,error=false){
+ $("message").textContent=text;
+ $("message").className=error?"error":"muted";
+}
+function connectSocket(){
+ if(!socket){
+  socket=io({auth:{token:localStorage.token||""}});
+  bindSocket();
+ }else if(!socket.connected)socket.connect();
+ return socket;
+}
+function bindSocket(){
+ socket.on("connect_error",e=>{
+  if(streamId)say("Live connection error: "+e.message,true);
+  if(watchingId)$("viewerStatus").textContent="Connection error: "+e.message;
+ });
+ socket.on("rtc-offer",async d=>{
+  if(!streamId||d.streamId!==streamId||!media)return;
+  try{
+   const old=hostPeers.get(d.fromSocketId);
+   if(old)old.close();
+   const pc=new RTCPeerConnection({iceServers:[]});
+   hostPeers.set(d.fromSocketId,pc);
+   media.getTracks().forEach(t=>pc.addTrack(t,media));
+   pc.onicecandidate=e=>{
+    if(e.candidate)socket.emit("rtc-ice",{
+     targetSocketId:d.fromSocketId,candidate:e.candidate
+    });
+   };
+   await pc.setRemoteDescription(d.description);
+   const answer=await pc.createAnswer();
+   await pc.setLocalDescription(answer);
+   socket.emit("rtc-answer",{
+    targetSocketId:d.fromSocketId,description:pc.localDescription
+   });
+  }catch(e){console.error(e);say("Viewer connection failed: "+e.message,true);}
+ });
+ socket.on("rtc-answer",async d=>{
+  if(!viewerPC||d.streamId!==watchingId)return;
+  try{
+   await viewerPC.setRemoteDescription(d.description);
+   for(const c of pendingIce.splice(0)){
+    try{await viewerPC.addIceCandidate(c);}catch(_){}
+   }
+  }catch(e){console.error(e);}
+ });
+ socket.on("rtc-ice",async d=>{
+  if(d.streamId===streamId){
+   const pc=hostPeers.get(d.fromSocketId);
+   if(pc&&d.candidate)try{await pc.addIceCandidate(d.candidate);}catch(_){}
+  }else if(d.streamId===watchingId&&viewerPC&&d.candidate){
+   if(!viewerPC.remoteDescription)pendingIce.push(d.candidate);
+   else try{await viewerPC.addIceCandidate(d.candidate);}catch(_){}
+  }
+ });
+ socket.on("chat-message",d=>{
+  if(d.streamId===streamId)appendChat("hostChat",d);
+  if(d.streamId===watchingId)appendChat("viewerChat",d);
+ });
+ socket.on("live-ended",d=>{
+  if(d.id===watchingId){
+   $("viewerStatus").textContent="The creator ended this stream.";
+   closeViewer(false);
+   refreshStreams();
+  }
+ });
+ socket.on("stream-status",d=>{
+  if(d.id===watchingId&&!d.live)
+   $("viewerStatus").textContent="Host disconnected.";
+ });
+}
+function appendChat(id,d){
+ const box=$(id),line=document.createElement("div");
+ line.className="chatline";
+ const name=document.createElement("strong");
+ name.textContent=d.username+": ";
+ const msg=document.createElement("span");
+ msg.textContent=d.message;
+ line.append(name,msg);box.append(line);box.scrollTop=box.scrollHeight;
+ while(box.children.length>150)box.firstChild.remove();
+}
+async function refreshStreams(){
+ try{
+  const d=await api("/live/streams"),box=$("streams");
+  box.replaceChildren();
+  if(!d.streams.length){
+   box.innerHTML='<p class="muted">No active live streams.</p>';
+   return;
+  }
+  for(const s of d.streams){
+   const card=document.createElement("section");
+   card.className="stream";
+   const h=document.createElement("h3");
+   h.textContent="🔴 "+s.title;
+   const p=document.createElement("p");
+   p.className="muted";
+   p.textContent=s.channelName+" · "+
+    (s.mode==="screen"?"Screen":"Camera")+
+    (s.live?" · Live":" · Waiting for host");
+   card.append(h,p);
+   if(s.id!==streamId){
+    const b=document.createElement("button");
+    b.className="primary";
+    b.textContent="Watch & Chat";
+    b.disabled=!s.live;
+    b.onclick=()=>watchStream(s);
+    card.append(b);
+   }else{
+    const own=document.createElement("p");
+    own.textContent="Your stream";
+    card.append(own);
+   }
+   box.append(card);
+  }
+ }catch(e){
+  $("streams").textContent="Could not load streams: "+e.message;
+ }
+}
+async function createLive(){
+ if(!localStorage.token){say("Please sign in first.",true);return;}
+ const title=$("title").value.trim();
+ mode=$("mode").value;
+ if(!title){say("Enter a stream title.",true);return;}
+ $("createBtn").disabled=true;
+ try{
+  const d=await api("/live/create",{
+   method:"POST",body:JSON.stringify({title,mode})
+  });
+  streamId=d.stream.id;
+  try{
+   if(mode==="screen"){
+    if(!navigator.mediaDevices?.getDisplayMedia){
+      if(!window.isSecureContext)
+       throw Error("Screen sharing requires HTTPS or localhost. This page is not in a secure context.");
+      throw Error("This browser does not support screen sharing. Try a browser that supports getDisplayMedia.");
+     }
+    media=await navigator.mediaDevices.getDisplayMedia({video:true,audio:true});
+   }else{
+    if(!navigator.mediaDevices?.getUserMedia)
+     throw Error("Camera unavailable. A secure browser context may be required.");
+    media=await navigator.mediaDevices.getUserMedia({
+     video:{facingMode:facing},audio:true
+    });
+   }
+   $("preview").srcObject=media;
+
+   if(mode==="screen"){
+    const screenTrack=media.getVideoTracks()[0];
+    if(screenTrack){
+     screenTrack.addEventListener("ended",()=>{
+      if(streamId) endLive();
+     },{once:true});
+    }
+   }
+
+   $("hostBox").classList.remove("hidden");
+   connectSocket();
+   socket.emit("host-join",{streamId},async r=>{
+    if(!r?.success){
+     say(r?.error||"Could not host stream.",true);
+     return;
+    }
+    say("Live session started. Other devices can join from the stream list.");
+    await refreshStreams();
+   });
+  }catch(e){
+   await api("/live/"+encodeURIComponent(streamId)+"/end",{method:"POST"}).catch(()=>{});
+   streamId=null;
+   stopMedia();
+   say("Could not start media: "+e.message,true);
+  }
+ }catch(e){say(e.message,true);}
+ finally{$("createBtn").disabled=false;}
+}
+async function switchCamera(){
+ if(!media||mode!=="camera")return;
+ const old=media.getVideoTracks()[0];
+ const nextFacing=facing==="user"?"environment":"user";
+ let replacement;
+ try{
+  replacement=await navigator.mediaDevices.getUserMedia({
+   video:{facingMode:{exact:nextFacing}},audio:false
+  });
+  const track=replacement.getVideoTracks()[0];
+  for(const pc of hostPeers.values()){
+   const sender=pc.getSenders().find(s=>s.track?.kind==="video");
+   if(sender)await sender.replaceTrack(track);
+  }
+  if(old){media.removeTrack(old);old.stop();}
+  media.addTrack(track);
+  facing=nextFacing;
+  $("preview").srcObject=media;
+  say("Camera switched without ending the live session.");
+ }catch(e){
+  if(replacement)replacement.getTracks().forEach(t=>t.stop());
+  say("Could not switch camera: "+e.message,true);
+ }
+}
+
+async function watchStream(s){
+ closeViewer(true);
+ watchingId=s.id;
+ $("viewerBox").classList.remove("hidden");
+ $("viewerTitle").textContent="🔴 "+s.title;
+ $("viewerStatus").textContent="Connecting…";
+ $("viewerChat").replaceChildren();
+ pendingIce=[];
+ connectSocket();
+
+ socket.emit("viewer-join",{streamId:s.id},async r=>{
+  if(!r?.success){
+   $("viewerStatus").textContent=r?.error||"Could not join.";
+   return;
+  }
+  if(Array.isArray(r.chat)){
+   r.chat.forEach(item=>appendChat("viewerChat",item));
+  }
+  if(!r.hostSocketId){
+   $("viewerStatus").textContent="The host is not connected.";
+   return;
+  }
+  try{
+   viewerPC=new RTCPeerConnection({iceServers:[]});
+   viewerPC.addTransceiver("video",{direction:"recvonly"});
+   viewerPC.addTransceiver("audio",{direction:"recvonly"});
+   viewerPC.ontrack=e=>{
+    if(e.streams[0]){
+     $("remoteVideo").srcObject=e.streams[0];
+    }else{
+     if(!$("remoteVideo").srcObject)
+      $("remoteVideo").srcObject=new MediaStream();
+     $("remoteVideo").srcObject.addTrack(e.track);
+    }
+   };
+   viewerPC.onicecandidate=e=>{
+    if(e.candidate)socket.emit("rtc-ice",{
+     targetSocketId:r.hostSocketId,candidate:e.candidate
+    });
+   };
+   viewerPC.onconnectionstatechange=()=>{
+    if(viewerPC)
+     $("viewerStatus").textContent=
+      viewerPC.connectionState==="connected"
+       ?"Connected to live video."
+       :"Video: "+viewerPC.connectionState;
+   };
+   const offer=await viewerPC.createOffer();
+   await viewerPC.setLocalDescription(offer);
+   socket.emit("rtc-offer",{
+    targetSocketId:r.hostSocketId,
+    description:viewerPC.localDescription
+   });
+  }catch(e){
+   $("viewerStatus").textContent="Video connection failed: "+e.message;
+  }
+ });
+}
+
+function sendChat(inputId){
+ const message=$(inputId).value.trim();
+ const id=inputId==="hostChatInput"?streamId:watchingId;
+ if(!message||!id||!socket)return;
+ socket.emit("chat-message",{streamId:id,message});
+ $(inputId).value="";
+}
+
+function closeViewer(sendLeave=true){
+ if(sendLeave&&socket&&watchingId)
+  socket.emit("leave-stream",{streamId:watchingId});
+ if(viewerPC){viewerPC.close();viewerPC=null;}
+ $("remoteVideo").srcObject=null;
+ watchingId=null;
+ $("viewerBox").classList.add("hidden");
+ pendingIce=[];
+}
+
+function stopMedia(){
+ if(media){media.getTracks().forEach(t=>t.stop());media=null;}
+ $("preview").srcObject=null;
+ $("hostBox").classList.add("hidden");
+ for(const pc of hostPeers.values())pc.close();
+ hostPeers.clear();
+}
+
+async function endLive(){
+ const id=streamId;
+ if(!id)return;
+ try{
+  await api("/live/"+encodeURIComponent(id)+"/end",{method:"POST"});
+ }catch(e){say(e.message,true);}
+ streamId=null;
+ stopMedia();
+ if(socket){socket.disconnect();socket=null;}
+ say("Live stream ended.");
+ await refreshStreams();
+}
+
+$("createBtn").onclick=createLive;
+$("switchBtn").onclick=switchCamera;
+$("endBtn").onclick=endLive;
+$("leaveBtn").onclick=()=>closeViewer(true);
+$("hostChatForm").onsubmit=e=>{
+ e.preventDefault();sendChat("hostChatInput");
+};
+$("viewerChatForm").onsubmit=e=>{
+ e.preventDefault();sendChat("viewerChatInput");
+};
+refreshStreams();
+setInterval(refreshStreams,10000);
+</script>
+</body>
+</html>

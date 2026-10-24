@@ -159,6 +159,16 @@ const api = {
 // Plugin Manager
 // ===============================
 
+// Socket.IO shared by the live-streaming plugin
+const httpServer = require("http").createServer(app);
+const liveSocketServer = new (require("socket.io").Server)(httpServer, {
+    cors: { origin: false },
+    serveClient: true
+});
+
+// Expose Socket.IO to plugins before they are activated.
+api.io = liveSocketServer;
+
 const pluginManager =
     new PluginManager(api);
 
@@ -230,8 +240,7 @@ app.use(
 // HTTP Server
 // ===============================
 
-const server =
-    app.listen(
+const server = httpServer.listen(
         5900,
         "0.0.0.0",
         ()=>{

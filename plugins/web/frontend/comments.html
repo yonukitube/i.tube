@@ -175,7 +175,7 @@ All comments (<span id="commentCount">0</span>)
 "use strict";
 
 const params = new URLSearchParams(location.search);
-const videoId = params.get("id");
+const videoId = params.get("id") || params.get("videoId") || params.get("video_id") || params.get("video");
 
 let viewerId = null;
 
@@ -239,7 +239,7 @@ async function loadComments(){
 
     try{
         const response = await fetch(
-            "/comments/" + encodeURIComponent(videoId)
+            "/videos/comments/" + encodeURIComponent(videoId)
         );
 
         const data = await response.json();
@@ -325,7 +325,7 @@ async function editComment(id, text){
 
     try{
         const response = await fetch(
-            "/comments/" + encodeURIComponent(id) + "/edit",
+            "/videos/comments/" + encodeURIComponent(id) + "/edit",
             {
                 method:"POST",
                 headers:{
@@ -384,7 +384,7 @@ document.getElementById("commentForm").addEventListener(
 
         try{
             const response = await fetch(
-                "/comments/" + encodeURIComponent(videoId),
+                "/videos/comments/" + encodeURIComponent(videoId),
                 {
                     method:"POST",
                     headers:{

@@ -67,13 +67,6 @@ module.exports = {
 
             async (req, res) => {
 
-    console.log(
-        "COMMENTS POST HIT",
-        req.params,
-        req.body,
-        req.user
-    );
-
     try {
 
         await db.read();
@@ -2167,6 +2160,90 @@ module.exports = {
 
         }
 
+    );
+
+
+    // =========================================================
+    // Edit Comment
+    // =========================================================
+
+    api.registerRoute(
+        "/videos/comments/:commentId/edit",
+        "POST",
+        api.auth,
+        async (req, res) => {
+            try {
+                await db.read();
+
+                const comments = Array.isArray(db.data.comments)
+                    ? db.data.comments
+                    : [];
+
+                const comment = comments.find(
+                    item => String(item.id) === String(req.params.commentId)
+                );
+
+                if (!comment) {
+                    return res.status(404).json({
+                        success: false,
+                        error: "Comment not found"
+                    });
+                }
+
+                if (String(comment.user_id) !== String(req.user.id)) {
+                    return res.status(403).json({
+                        success: false,
+                        error: "No permission"
+                    });
+                }
+
+                if (!req.body || typeof req.body.text !== "string") {
+                    return res.status(400).json({
+                        success: false,
+                        error: "Comment text is required"
+                    });
+                }
+
+                const text = req.body.text.trim();
+
+                // The existing comments page uses an empty value to request deletion.
+                if (!text) {
+                    db.data.comments = comments.filter(
+                        item => String(item.id) !== String(req.params.commentId)
+                    );
+                    await db.write();
+
+                    return res.json({
+                        success: true,
+                        removed: true
+                    });
+                }
+
+                if (text.length > 1000) {
+                    return res.status(400).json({
+                        success: false,
+                        error: "Comment is too long"
+                    });
+                }
+
+                comment.text = text;
+                comment.updated_at = new Date().toISOString();
+
+                await db.write();
+
+                return res.json({
+                    success: true,
+                    removed: false,
+                    comment
+                });
+            } catch (error) {
+                console.error("Comment edit error:", error);
+                return res.status(500).json({
+                    success: false,
+                    error: "Failed to update comment"
+                });
+            }
+        }
     );
 
 

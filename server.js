@@ -237,79 +237,291 @@ app.use(
 
 
 // ===============================
-// HTTP Server
+// Nginx + HTTP Server
 // ===============================
 
-const server = httpServer.listen(
-        5900,
-        "0.0.0.0",
-        ()=>{
+const { execFileSync } = require("child_process");
 
-            console.log(
-                "Server running on port 5900"
-            );
+const nginxConfig = path.join(
+    process.env.HOME,
+    "itube-https",
+    "nginx-https.conf"
+);
 
+let nginxStartedByThisProcess = false;
+let shuttingDown = false;
+let server = null;
+
+
+function ensureITubeCertificate() {
+    const fs = require("fs");
+    const os = require("os");
+
+    const dir = path.join(process.env.HOME, "itube-https");
+    const cert = path.join(dir, "server.crt");
+    const key = path.join(dir, "server.key");
+
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+
+    // ابحث عن عنوان IPv4 محلي غير عنوان loopback.
+    const interfaces = os.networkInterfaces();
+    const candidates = [];
+
+    for (const entries of Object.values(interfaces)) {
+        for (const item of (entries || [])) {
+            if (
+                item.family === "IPv4" &&
+                !item.internal &&
+                !item.address.startsWith("169.254.")
+            ) {
+                candidates.push(item.address);
+            }
         }
-    );
-
-
-// ===============================
-// Graceful Shutdown
-// ===============================
-
-function shutdown(){
-
-    console.log(
-        "Stopping i.Tube..."
-    );
-
-
-    // إيقاف Python Agent
-
-    try{
-
-        if(typeof agent !== "undefined" && agent && !agent.killed){
-
-            agent.kill("SIGINT");
-
-        }
-
-    }catch(error){
-
-        console.log(
-            "Agent shutdown error:",
-            error.message
-        );
-
     }
 
+    const ip = candidates.find(a =>
+        /^10\./.test(a) ||
+        /^192\.168\./.test(a) ||
+        /^172\.(1[6-9]|2\d|3[01])\./.test(a)
+    ) || candidates[0];
 
-    // إيقاف HTTP server
-
-    server.close(() => {
-
-        console.log(
-            "i.Tube server stopped"
+    if (!ip) {
+        throw new Error(
+            "لم أجد عنوان IPv4 للشبكة. اتصل بشبكة Wi-Fi ثم أعد التشغيل."
         );
+    }
 
-        process.exit(0);
+    let valid = false;
 
-    });
+    if (fs.existsSync(cert) && fs.existsSync(key)) {
+        try {
+            const san = execFileSync(
+                "openssl",
+                ["x509", "-in", cert, "-noout", "-ext", "subjectAltName"],
+                { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
+            );
 
+            execFileSync(
+                "openssl",
+                ["x509", "-in", cert, "-checkend", "86400", "-noout"],
+                { stdio: "ignore" }
+            );
+
+            // لا نحتفظ بالشهادة إن لم تتضمن IP الشبكة الحالية.
+            valid = san.includes("IP Address:" + ip);
+        } catch (_) {
+            valid = false;
+        }
+    }
+
+    if (valid) {
+        console.log("HTTPS certificate is valid for " + ip + "; reusing it.");
+        return false;
+    }
+
+    console.log("Creating/updating HTTPS certificate for " + ip + "...");
+
+    // أنشئ الملفات المؤقتة أولًا حتى لا نمسح الشهادة القديمة قبل نجاح الإنشاء.
+    const newCert = cert + ".new";
+    const newKey = key + ".new";
+
+    try {
+        execFileSync("openssl", [
+            "req", "-x509", "-nodes",
+            "-newkey", "rsa:2048",
+            "-days", "365",
+            "-keyout", newKey,
+            "-out", newCert,
+            "-subj", "/CN=" + ip,
+            "-addext",
+            "subjectAltName=IP:" + ip + ",IP:127.0.0.1,DNS:localhost"
+        ], { stdio: "inherit" });
+
+        fs.chmodSync(newKey, 0o600);
+        fs.chmodSync(newCert, 0o644);
+        fs.renameSync(newKey, key);
+        fs.renameSync(newCert, cert);
+
+        console.log("HTTPS certificate created for " + ip + ".");
+        return true;
+    } catch (error) {
+        try { fs.unlinkSync(newCert); } catch (_) {}
+        try { fs.unlinkSync(newKey); } catch (_) {}
+        throw error;
+    }
 }
 
 
-// ===============================
-// Shutdown Signals
-// ===============================
+function ensureNginxConfig() {
+    const fs = require("fs");
+    const dir = path.join(process.env.HOME, "itube-https");
+    const cert = path.join(dir, "server.crt");
+    const key = path.join(dir, "server.key");
 
-process.on(
-    "SIGINT",
-    shutdown
-);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 
+    if (!fs.existsSync(cert) || !fs.existsSync(key)) {
+        throw new Error("HTTPS certificate or private key is missing.");
+    }
 
-process.on(
-    "SIGTERM",
-    shutdown
-);
+    const config = `worker_processes 1;
+pid ${dir}/nginx.pid;
+error_log ${dir}/error.log;
+
+events {
+    worker_connections 256;
+}
+
+http {
+    access_log ${dir}/access.log;
+
+    server {
+        listen 8443 ssl;
+        server_name _;
+
+        ssl_certificate ${cert};
+        ssl_certificate_key ${key};
+
+        location / {
+            proxy_pass http://127.0.0.1:5900;
+            proxy_http_version 1.1;
+
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto https;
+
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+        }
+    }
+}
+`;
+
+    let current = "";
+    try {
+        current = fs.readFileSync(nginxConfig, "utf8");
+    } catch (_) {}
+
+    if (current !== config) {
+        const temp = nginxConfig + ".new";
+        fs.writeFileSync(temp, config, { mode: 0o600 });
+        fs.renameSync(temp, nginxConfig);
+        console.log("Nginx configuration created/updated automatically.");
+    } else {
+        console.log("Nginx configuration already exists; reusing it.");
+    }
+}
+
+function startNginx() {
+    try {
+        const fs = require("fs");
+        const certChanged = ensureITubeCertificate();
+        ensureNginxConfig();
+
+        const pidFile = path.join(
+            process.env.HOME, "itube-https", "nginx.pid"
+        );
+
+        if (fs.existsSync(pidFile)) {
+            const pid = Number(fs.readFileSync(pidFile, "utf8").trim());
+
+            if (Number.isInteger(pid) && pid > 1) {
+                try {
+                    process.kill(pid, 0);
+
+                    if (certChanged) {
+                        execFileSync(
+                            "nginx",
+                            ["-t", "-c", nginxConfig],
+                            { stdio: "inherit" }
+                        );
+                        execFileSync(
+                            "nginx",
+                            ["-c", nginxConfig, "-s", "reload"],
+                            { stdio: "inherit" }
+                        );
+                        console.log("Existing Nginx reloaded with the updated certificate.");
+                    } else {
+                        console.log("Nginx is already running; reusing it.");
+                    }
+                    return;
+                } catch (error) {
+                    if (error.code === "ESRCH") {
+                        fs.unlinkSync(pidFile);
+                    } else {
+                        throw error;
+                    }
+                }
+            } else {
+                fs.unlinkSync(pidFile);
+            }
+        }
+
+        execFileSync("nginx", ["-t", "-c", nginxConfig], {
+            stdio: "inherit"
+        });
+
+        execFileSync("nginx", ["-c", nginxConfig], {
+            stdio: "inherit"
+        });
+
+        nginxStartedByThisProcess = true;
+        console.log("Nginx HTTPS started on port 8443.");
+    } catch (error) {
+        console.error("Failed to prepare HTTPS/Nginx:", error.message);
+        process.exit(1);
+    }
+}
+
+function stopManagedNginx() {
+    if (!nginxStartedByThisProcess) return;
+
+    try {
+        execFileSync("nginx", ["-c", nginxConfig, "-s", "quit"], {
+            stdio: "inherit"
+        });
+        console.log("Nginx stopped.");
+    } catch (error) {
+        console.error("Could not stop managed Nginx:", error.message);
+    }
+}
+
+function shutdown() {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    console.log("Stopping i.Tube...");
+
+    try {
+        if (typeof agent !== "undefined" && agent && !agent.killed) {
+            agent.kill("SIGINT");
+        }
+    } catch (error) {
+        console.log("Agent shutdown error:", error.message);
+    }
+
+    const finish = () => {
+        stopManagedNginx();
+        console.log("i.Tube server stopped");
+        process.exit(0);
+    };
+
+    if (server && server.listening) {
+        server.close(finish);
+        // Avoid waiting forever for lingering connections.
+        setTimeout(finish, 3000).unref();
+    } else {
+        finish();
+    }
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
+
+startNginx();
+
+server = httpServer.listen(5900, "0.0.0.0", () => {
+    console.log("Server running on port 5900");
+});
+        
